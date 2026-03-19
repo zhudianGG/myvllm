@@ -1,0 +1,21 @@
+调度器的完整工作流程如下：
+schedule() 被调用
+    ├─ waiting 非空？
+    │   ├─ 是：尝试 Prefill admit
+    │   │       逐个检查 waiting 队首
+    │   │       满足约束则 allocate + RUNNING + 移入 running
+    │   │       返回 (scheduled, is_prefill=True)
+    │   └─ 否：进入 Decode
+    │           逐个处理 running
+    │           需要新块但没有？抢占其他请求或自抢占
+    │           may_append
+    │           返回 (scheduled, is_prefill=False)
+    │
+postprocess() 被调用
+    ├─ 追加 token
+    └─ 检查终止，deallocate + FINISHED
+
+情况	处理方式	num_cached_tokens
+哈希命中 + 内容一致 + 块在 used	ref_count++，复用	+= block_size
+哈希命中 + 内容一致 + 块在 free	分配（从 free 移到 used）	+= block_size
+哈希未命中 或 内容不一致	分配新块	不变
