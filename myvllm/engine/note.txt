@@ -18,4 +18,21 @@ postprocess() 被调用
 情况	处理方式	num_cached_tokens
 哈希命中 + 内容一致 + 块在 used	ref_count++，复用	+= block_size
 哈希命中 + 内容一致 + 块在 free	分配（从 free 移到 used）	+= block_size
-哈希未命中 或 内容不一致	分配新块	不变
+哈希未命中 或 内容不一致	分配新块	
+
+初始化顺序：
+NCCL init → 构建模型 → 加载权重 → warmup → 分配 KV Cache → 捕获 Graph → IPC 设置
+
+张量形状总结
+阶段	张量	形状	dtype
+Prefill	input_ids	[ΣQ]	int64
+Prefill	positions	[ΣQ]	int64
+Prefill	cu_seqlens_q	[bs+1]	int32
+Prefill	cu_seqlens_k	[bs+1]	int32
+Prefill	slot_mapping	[Σ写入槽位]	int32
+Prefill	block_tables	[bs, max_blocks] 或 None	int32
+Decode	input_ids	[bs]	int64
+Decode	positions	[bs]	int64
+Decode	slot_mapping	[bs]	int32
+Decode	context_lens	[bs]	int32
+Decode	block_tables	[bs, max_blocks]	int32
