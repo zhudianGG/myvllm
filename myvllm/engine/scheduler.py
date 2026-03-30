@@ -1,3 +1,9 @@
+from collections import deque
+
+from myvllm.config import Config
+from myvllm.engine.sequence import Sequence, SequenceStatus
+from myvllm.engine.block_manager import BlockManager
+
 class Scheduler:
     def __init__(self, config):
         self.max_num_seqs = config.max_num_seqs
