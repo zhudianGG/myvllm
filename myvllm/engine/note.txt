@@ -78,3 +78,41 @@ Qwen3ForCausalLM
         │           └── Qwen3MLP
         └── RMSNorm (final)
   └── ParallelLMHead
+
+Residual 融合。
+
+标准的 LayerNorm 是 y = norm(x + res)。在 Qwen3 的实现中，LayerNorm 层接收 (x, res)，返回 (normed_x, updated_res)。这利用了 PyTorch 的 add_ 原地操作来减少显存开销和 Kernel 启动。
+
+torch.compile 装饰器, RMSNorm 是内存带宽受限的操作（Element-wise），编译后可以把加法、平方、均值、开方、乘法等操作融合成一个 Kernel，显著提升性能
+
+forward 只返回 hidden_states，不返回 logits。compute_logits 是单独的方法。这是为了适应 ModelRunner 的两阶段设计：
+
+Prefill/Eager 模式：调用 compute_logits(model(input_ids))
+Graph 模式：先重放 graph 得到 hidden_states，再调用 compute_logits
+为什么不把 LMHead 放入 Graph？
+
+LMHead 的输出太大（Batch × VocabSize），显存占用高
+Prefill 时只需要最后位置的 logits，这个 gather 操作比较复杂
+Decode 时 Batch 小，LMHead 不算瓶颈
+
+权重绑定
+很多模型（如 Qwen, Llama）的 Embedding 层和 LMHead 层共享权重。初始化时需要手动把数据指针指过去：
+
+self.lm_head.weight.data = self.model.embed_tokens.weight.data
+这样两个模块共享同一块物理显存。
+
+编译与性能
+在关键的瓶颈位置用了 torch.compile：
+
+RMSNorm：Element-wise 算子融合
+SiluAndMul：激活函数融合
+RotaryEmbedding：复杂的索引和三角函数计算
+Sampler：Softmax + Argmax 融合
+PyTorch 2.0 推荐的优化点。对于矩阵乘法（Linear 层），cuBLAS 已经优化得很好，编译收益不大
+
+两个终止条件：
+
+条件	含义
+token_id == eos and not ignore_eos	生成了结束符
+num_completion_tokens == max_tokens	达到最大生成长度
+ignore_eos 用于需要强制生成固定长度的场景（比如 Benchmark）

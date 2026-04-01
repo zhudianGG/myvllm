@@ -18,3 +18,5 @@ Attention	集成 Flash Attention 和 KV Cache 写入
        → Scheduler.postprocess() → 更新状态，终止判断
                                           ↓
        → 输出完成的请求
+
+相关note见 engine/note.txt

@@ -1,3 +1,10 @@
+import torch
+from torch import nn
+import torch.nn.functional as F
+import torch.distributed as dist
+
+from myvllm.utils.context import get_context
+
 class VocalbParallelEmbedding(nn.Module):
     def __init__(self, num_embeddings, embedding_dim):
         super().__init__()

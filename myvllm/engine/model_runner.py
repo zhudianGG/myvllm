@@ -1,4 +1,15 @@
+import pickle
 import torch
+import torch.distributed as dist
+from multiprocessing.synchronize import Event
+from multiprocessing.shared_memory import SharedMemory
+
+from myvllm.config import Config
+from myvllm.engine.sequence import Sequence
+from myvllm.models.qwen3 import Qwen3ForCausalLM
+from myvllm.layers.sampler import Sampler
+from myvllm.utils.context import set_context, get_context, reset_context
+from myvllm.utils.loader import load_model
 
 @dataclass
 class Context:
@@ -211,13 +222,57 @@ class ModelRunner:
         # IPC Setting
         if self.world_size > 1:
             if rank == 0:
-                self.shm = SharedMemory(name="nanovllm", create=True, size=2**20)
+                self.shm = SharedMemory(name="myvllm", create=True, size=2**20)
                 dist.barrier()
             else:
                 dist.barrier()
-                self.shm = SharedMemory(name="nanovllm")
+                self.shm = SharedMemory(name="myvllm")
                 self.loop() # enter loop
     
+    def write_shm(self, method_name, *args):
+        assert self.world_size > 1 and self.rank == 0
+        data = pickle.dumps([method_name, *args])
+        n = len(data)
+        self.shm.buf[0:4] = n.to_bytes(4, "little")
+        self.shm.buf[4:n+4] = data
+        for event in self.event:
+            event.set()
+    
+    def read_shm(self):
+        assert self.world_size > 1 and self.rank > 0
+        self.event.wait()
+        n = int.from_bytyes(self.shm.buf[0:4], "little")
+        method_name, *args = pickle.loads(self.shm.buf[4:n+4])
+        self.event.clear()
+        return method_name, args
+
+    def loop(self):
+        while True:
+            method_name, args = self.read_shm()
+            self.call(method_name, *args)
+            if method_name == "exit":
+                break
+    
+    def load_model(model, path):
+        packed_modules_mapping = getattr(model, "packed_modules_mapping", {})
+
+        for file in glob(os.path.join(path, "*.safetensors")):
+            with safe_open(file, "pt", "cpu") as f:
+                for weight_name in f.keys():
+                    # check the need for divide weight
+                    for k in packed_modules_mapping:
+                        if k in weight_name:
+                            v, shard_id = packed_modules_mapping[k]
+                            param_name = weight_name.replace(k, v)
+                            param = model.get_parameter(param_name)
+                            weight_loader = getattr(param, "weight_loader")
+                            weight_loader(param, f.get_tensor(weight_name), shard_id)
+                            break
+                    else:
+                        # normal weight
+                        param = model.get_parameter(weight_name)
+                        weight_loader = getattr(param, "weight_loader", default_weight_loader)
+                        weight_loader(param, f.get_tensor(weight_name))
     def warmup_model(self):
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
