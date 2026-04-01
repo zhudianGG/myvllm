@@ -36,3 +36,45 @@ Decode	positions	[bs]	int64
 Decode	slot_mapping	[bs]	int32
 Decode	context_lens	[bs]	int32
 Decode	block_tables	[bs, max_blocks]	int32
+
+Prefill 阶段，如果有 Prefix Cache 命中，流程如下：
+
+1. prepare_prefill 检测到 cu_seqlens_k[-1] > cu_seqlens_q[-1]
+   → 说明部分 token 已缓存
+   → 构造 block_tables
+
+2. Attention.forward:
+   a. store_kvcache 写入未缓存部分的 KV（slot_mapping 只包含未缓存的槽位）
+   b. block_tables 不为 None，所以把 k, v 替换为 k_cache, v_cache
+   c. flash_attn_varlen_func 通过 block_table 读取分页的完整 KV
+
+cu_seqlens_q = [0, 44]     # Query 只有 44 个 token（300 - 256）
+cu_seqlens_k = [0, 300]    # Key 有 300 个 token
+slot_mapping = [3072, 3073, ..., 3115]  # 44 个槽位，块 12 的位置 0-43
+block_tables = [[5, 12]]   # 两个块：块 5（已缓存），块 12（新写入）
+
+Attention 执行时：
+
+Q 来自当前计算的 44 个 token
+K/V 来自缓存，通过 block_table 索引读取全部 300 个 token 的 KV
+
+通信模式总结
+层类型	切分方式	通信操作	时机
+ColumnParallel	输出维	无	-
+RowParallel	输入维	all_reduce	forward 后
+VocabParallelEmbedding	词表维	all_reduce	forward 后
+ParallelLMHead	词表维	gather (到 rank 0)	forward 后
+
+模型层组装：
+模型结构概览
+Qwen3ForCausalLM
+  └── Qwen3Model
+        ├── VocabParallelEmbedding
+        ├── LayerList
+        │     └── Qwen3DecoderLayer
+        │           ├── RMSNorm (input)
+        │           ├── Qwen3Attention
+        │           ├── RMSNorm (post_attn)
+        │           └── Qwen3MLP
+        └── RMSNorm (final)
+  └── ParallelLMHead
