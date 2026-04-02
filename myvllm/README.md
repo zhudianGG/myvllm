@@ -19,4 +19,51 @@ Attention	集成 Flash Attention 和 KV Cache 写入
                                           ↓
        → 输出完成的请求
 
+step() 被调用
+    │
+    ├─ scheduler.schedule()
+    │   ├─ waiting 非空？尝试 Prefill admit
+    │   └─ 否则 Decode，必要时抢占
+    │
+    ├─ model_runner.call("run", seqs, is_prefill)
+    │   ├─ prepare_prefill() 或 prepare_decode()
+    │   │   └─ 构造 input_ids, positions, slot_mapping, ...
+    │   │   └─ set_context(...)
+    │   │
+    │   ├─ run_model()
+    │   │   ├─ Prefill/Eager: model(input_ids) → compute_logits()
+    │   │   └─ Graph: staging → replay → compute_logits()
+    │   │
+    │   ├─ sampler(logits, temperatures)
+    │   │   └─ 只在 rank 0 执行
+    │   │
+    │   └─ reset_context()
+    │
+    └─ scheduler.postprocess(seqs, token_ids)
+        ├─ 追加 token
+        ├─ 检查终止条件
+        └─ 终止的序列 deallocate + FINISHED
+
+关键配置参数
+@dataclass
+class Config:
+    model: str                          # 模型路径
+    max_num_batched_tokens: int = 16384 # 单步最大 token 数
+    max_num_seqs: int = 512             # 最大并发请求数
+    max_model_len: int = 4096           # 最大序列长度
+    gpu_memory_utilization: float = 0.9 # 显存利用率
+    tensor_parallel_size: int = 1       # 张量并行度
+    enforce_eager: bool = False         # 强制 Eager 模式
+    kvcache_block_size: int = 256       # KV Cache 块大小
+
+参数影响分析：
+
+参数	影响
+max_num_batched_tokens	Prefill 吞吐上限，太大可能 OOM
+max_num_seqs	并发度上限，影响 Decode 吞吐
+max_model_len	决定 Graph 捕获时的 block_tables 大小
+gpu_memory_utilization	KV Cache 块数，太高容易 OOM
+kvcache_block_size	块粒度，影响缓存命中率和元数据开销
+enforce_eager	调试用，关闭 Graph 便于排查问题
+
 相关note见 engine/note.txt

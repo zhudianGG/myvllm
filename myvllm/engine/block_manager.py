@@ -1,3 +1,9 @@
+from collections import deque
+import xxhash
+import numpy as np
+
+from myvllm.engine.sequence import Sequence
+
 import torch
 
 class Block:
